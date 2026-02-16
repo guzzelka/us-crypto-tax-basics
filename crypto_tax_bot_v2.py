@@ -1,9 +1,11 @@
 """
-Crypto Tax Bot v2.0 - Lightweight Version
+Crypto Tax Bot v2.1 - Lightweight Version with Professional Tone
 Telegram bot with RAG using OpenAI Embeddings (no local ML models)
 
 This version uses OpenAI's text-embedding-3-small instead of sentence-transformers,
 making it lightweight enough to run on 512MB RAM (Render Starter plan).
+
+v2.1 changes: Updated system prompt to professional/cautious tone (v1.2)
 
 Requirements:
 pip install python-telegram-bot openai aiosqlite
@@ -24,11 +26,11 @@ from dataclasses import dataclass
 # Telegram
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Application, 
-    CommandHandler, 
-    MessageHandler, 
+    Application,
+    CommandHandler,
+    MessageHandler,
     CallbackQueryHandler,
-    filters, 
+    filters,
     ContextTypes
 )
 from telegram.error import TelegramError
@@ -38,6 +40,7 @@ from openai import OpenAI
 
 # Database
 import aiosqlite
+
 
 # =============================================================================
 # CONFIGURATION
@@ -50,17 +53,17 @@ class Config:
     openai_api_key: str
     knowledge_base_path: str
     db_path: str
-    
+
     @classmethod
     def from_env(cls) -> 'Config':
         telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
         openai_key = os.getenv("OPENAI_API_KEY")
-        
+
         if not telegram_token:
             raise ValueError("TELEGRAM_BOT_TOKEN environment variable not set")
         if not openai_key:
             raise ValueError("OPENAI_API_KEY environment variable not set")
-        
+
         return cls(
             telegram_token=telegram_token,
             openai_api_key=openai_key,
@@ -70,62 +73,128 @@ class Config:
 
 
 # =============================================================================
-# SYSTEM PROMPT
+# SYSTEM PROMPT (v1.2 — Professional Tone)
 # =============================================================================
 
-SYSTEM_PROMPT = """You are a specialized crypto tax education assistant for US taxpayers. 
+SYSTEM_PROMPT = """You are a specialized crypto tax education assistant for US taxpayers.
 You have access to a curated knowledge base built from official IRS guidance.
+Your job is to explain how tax rules work — not to suggest strategies, optimize taxes, or give personalized advice.
 
 IDENTITY & LIMITATIONS:
-- You are NOT a CPA, tax attorney, or financial advisor
+- You are NOT a CPA, tax attorney, financial advisor, or tax strategist
 - Everything you provide is EDUCATIONAL and INFORMATIONAL only
 - You do NOT make tax projections or tell users what they "should" do
-- You only cover US federal tax rules
+- You do NOT suggest strategies to minimize, reduce, or avoid taxes
+- You only cover U.S. federal income tax rules. State tax treatment may differ.
 
 CRITICAL RULES:
 1. ONLY answer based on the provided context from the knowledge base
-2. If information is NOT in the context, say: "I don't have verified information about that topic. Please consult a CPA or check irs.gov."
+2. If information is NOT in the context, say: "I don't have verified information about that topic. Please consult a CPA or check irs.gov/digital-assets."
 3. NEVER invent tax rules, rates, or deadlines
-4. Always cite the source at the end of your response
+4. NEVER state proposed or pending rules as settled law
+5. Always cite the source at the end of your response
 
-RESPONSE FORMAT:
-- Lead with the direct answer
-- Explain briefly (2-3 paragraphs max)
-- Include an example with numbers if available
-- End with: "📎 Source: [source name]"
-- End with: "⚠️ Educational info only, not tax advice. Consult a CPA for your situation."
+LANGUAGE RULES (CRITICAL):
+
+NEVER use these phrases:
+- "You should..."
+- "You can reduce your taxes by..."
+- "This will lower your liability..."
+- "This allows you to avoid tax..."
+- "This is a strategy for..."
+- "You could potentially..."
+- "Consider doing..."
+- "One approach is to..."
+- "You do NOT owe any tax." (too categorical)
+- "There is no taxable event." (too categorical)
+- "This provides a double benefit..."
+
+ALWAYS use hedging language:
+- "May" instead of "will" or "can"
+- "Generally" instead of absolute statements
+- "Under current federal tax law..."
+- "In most cases..."
+- "Depends on individual circumstances"
+- "This reflects current law as of 2025"
+
+Instead of strategic language, explain the MECHANISM:
+- Bad: "Selling before Dec 31 can be a strategy to harvest losses"
+- Good: "Some taxpayers realize losses before year-end. Realized losses may offset capital gains under current rules."
+- Bad: "You can sell and immediately buy back crypto to harvest losses"
+- Good: "Under current federal tax law, the wash sale rule applies to securities but not to property. Crypto is classified as property."
+- Bad: "This provides a double benefit: a charitable deduction and avoidance of capital gains tax"
+- Good: "Donating appreciated property held over one year may allow a deduction at fair market value. The specific tax treatment depends on multiple factors including holding period, charity type, and AGI limitations."
+
+RESPONSE STRUCTURE (every substantive answer):
+
+**Rule**
+State the relevant tax rule. Cite the IRS source.
+
+**Explanation**
+Explain how the rule works in plain language. If using numerical examples, keep them purely mechanical with no tax rate predictions. Always add: "This is a simplified example for illustration only."
+
+**Limitations**
+- "This reflects current federal law as of 2025."
+- "State tax treatment may differ."
+- "Individual circumstances vary."
+- Any relevant gray areas or pending changes.
+
+End every response with:
+📎 Source: [IRS source name]
+⚠️ This is general educational information about U.S. federal income tax rules. It does not consider your full tax profile, filing status, state taxation, or other income factors. Consult a qualified tax professional for your specific situation.
+
+HANDLING EVOLVING LAW:
+- Never state proposed rules as settled law
+- Use: "Recent IRS guidance indicates..." or "As of 2025, the IRS has stated..."
+- Never give specific effective dates for rules that are not yet final
+- Bad: "IRS will default to FIFO starting in 2026"
+- Good: "Recent IRS guidance (Rev. Proc. 2024-28) addresses cost basis accounting methods for digital assets. The specific requirements are complex — consult a CPA for details."
+
+HANDLING GRAY AREAS:
+- Clearly state: "IRS has not issued specific guidance on this topic."
+- Explain general principles that may apply
+- Always recommend consulting a tax professional
 
 RISK LEVEL HANDLING:
-- If context shows risk_level="high", warn: "⚠️ This is a gray area with limited IRS guidance."
-- If context shows risk_level="medium", mention: "Note: IRS guidance on this is limited."
-"""
+- If context shows risk_level="high": "⚠️ This is a gray area with limited IRS guidance. Professional consultation is strongly recommended."
+- If context shows risk_level="medium": "Note: IRS guidance on this topic is limited."
+
+HANDLING OFF-TOPIC OR HARMFUL REQUESTS:
+If someone asks how to hide income, evade taxes, or avoid reporting:
+"I can only provide information about how tax rules work. I cannot assist with tax evasion, which is illegal under federal law. If you have concerns about your tax situation, please consult a licensed tax professional."
+
+TONE: Professional but approachable. Informative, not advisory. Cautious, not bold. Explain the mechanism, never suggest the tactic."""
 
 
 # =============================================================================
-# LOGGING
+# LOGGING SETUP
 # =============================================================================
 
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
+def setup_logging() -> logging.Logger:
+    """Configure logging."""
+    logging.basicConfig(
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        level=logging.INFO
+    )
+    return logging.getLogger(__name__)
+
+logger = setup_logging()
 
 
 # =============================================================================
-# KNOWLEDGE BASE WITH OPENAI EMBEDDINGS
+# KNOWLEDGE BASE & RAG (Lightweight - OpenAI Embeddings)
 # =============================================================================
 
 class KnowledgeBase:
     """Knowledge base with OpenAI embeddings for semantic search."""
-    
+
     def __init__(self, json_path: str, openai_client: OpenAI):
-        self.chunks: List[Dict] = []
-        self.embeddings: List[List[float]] = []
+        self.chunks = []
+        self.embeddings = []
         self.openai = openai_client
         self._load_knowledge_base(json_path)
         self._compute_embeddings()
-    
+
     def _load_knowledge_base(self, json_path: str):
         """Load chunks from JSON file."""
         try:
@@ -139,19 +208,17 @@ class KnowledgeBase:
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON in knowledge base: {e}")
             raise
-    
+
     def _compute_embeddings(self):
         """Compute embeddings for all chunks using OpenAI."""
         logger.info("Computing embeddings for knowledge base...")
-        
+
         texts = []
         for chunk in self.chunks:
-            # Combine searchable text
             triggers = ' '.join(chunk.get('question_triggers', []))
             text = f"{chunk['title']} {triggers} {chunk.get('simple_answer', '')}"
             texts.append(text)
-        
-        # Batch embed all texts (OpenAI allows up to 2048 inputs)
+
         try:
             response = self.openai.embeddings.create(
                 model="text-embedding-3-small",
@@ -162,7 +229,7 @@ class KnowledgeBase:
         except Exception as e:
             logger.error(f"Error computing embeddings: {e}")
             raise
-    
+
     def _cosine_similarity(self, a: List[float], b: List[float]) -> float:
         """Calculate cosine similarity between two vectors."""
         dot_product = sum(x * y for x, y in zip(a, b))
@@ -171,10 +238,9 @@ class KnowledgeBase:
         if norm_a == 0 or norm_b == 0:
             return 0.0
         return dot_product / (norm_a * norm_b)
-    
+
     def search(self, query: str, n_results: int = 3) -> List[Dict]:
         """Search for relevant chunks using semantic similarity."""
-        # Get query embedding
         try:
             response = self.openai.embeddings.create(
                 model="text-embedding-3-small",
@@ -184,41 +250,37 @@ class KnowledgeBase:
         except Exception as e:
             logger.error(f"Error getting query embedding: {e}")
             return []
-        
-        # Calculate similarities
+
         similarities = []
         for i, chunk_embedding in enumerate(self.embeddings):
             sim = self._cosine_similarity(query_embedding, chunk_embedding)
             similarities.append((sim, i))
-        
-        # Sort by similarity and get top results
+
         similarities.sort(reverse=True)
         top_indices = [idx for _, idx in similarities[:n_results]]
-        
+
         return [self.chunks[i] for i in top_indices]
-    
+
     def format_context(self, chunks: List[Dict]) -> str:
         """Format chunks into context string for LLM."""
         if not chunks:
-            return "No relevant information found in the knowledge base."
-        
+            return "No relevant information found in knowledge base."
+
         context_parts = []
         for chunk in chunks:
-            part = f"""
----
-TOPIC: {chunk['title']}
-SOURCE: {chunk.get('source', 'Knowledge Base')}
-RISK_LEVEL: {chunk.get('risk_level', 'low')}
-
-{chunk['content']}
-
-SIMPLE_ANSWER: {chunk.get('simple_answer', '')}
-"""
-            if chunk.get('example'):
-                part += f"\nEXAMPLE: {chunk['example']}"
+            risk = chunk.get('risk_level', 'low')
+            part = f"""---
+Topic: {chunk.get('topic', '')} / {chunk.get('subtopic', '')}
+Title: {chunk.get('title', '')}
+Content: {chunk.get('content', '')}
+Simple Answer: {chunk.get('simple_answer', '')}
+Example: {chunk.get('example', 'N/A')}
+Source: {chunk.get('source', 'N/A')}
+Risk Level: {risk}
+---"""
             context_parts.append(part)
-        
-        return "\n".join(context_parts)
+
+        return '\n'.join(context_parts)
 
 
 # =============================================================================
@@ -226,44 +288,37 @@ SIMPLE_ANSWER: {chunk.get('simple_answer', '')}
 # =============================================================================
 
 class LLMHandler:
-    """Handles LLM interactions."""
-    
+    """Handles LLM interactions using OpenAI."""
+
     def __init__(self, openai_client: OpenAI):
         self.client = openai_client
-    
-    async def generate_response(self, user_query: str, context: str) -> Tuple[str, int]:
+        self.model = os.getenv("MODEL_NAME", "gpt-4o-mini")
+
+    def generate_response(self, query: str, context: str) -> str:
         """Generate a response using the LLM with RAG context."""
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": f"""
-Based on the following knowledge base context, answer the user's question.
-If the context doesn't contain relevant information, say so clearly.
+            {"role": "user", "content": f"""Based on the following context from the knowledge base, answer the user's question.
 
 CONTEXT:
 {context}
 
-USER QUESTION: {user_query}
-"""}
+USER QUESTION: {query}
+
+Remember: Follow the response structure (Rule/Explanation/Limitations). Use hedging language. Never give strategic advice. Cite sources. Include the disclaimer."""}
         ]
-        
+
         try:
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None,
-                lambda: self.client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=messages,
-                    max_tokens=1000,
-                    temperature=0.3
-                )
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                max_tokens=int(os.getenv("MAX_TOKENS", "1000")),
+                temperature=float(os.getenv("TEMPERATURE", "0.3"))
             )
-            
-            tokens_used = response.usage.total_tokens if response.usage else 0
-            return response.choices[0].message.content, tokens_used
-            
+            return response.choices[0].message.content
         except Exception as e:
             logger.error(f"LLM error: {e}")
-            return "Sorry, I'm having trouble processing your request. Please try again.", 0
+            return "Sorry, I'm having trouble processing your question right now. Please try again later."
 
 
 # =============================================================================
@@ -271,50 +326,48 @@ USER QUESTION: {user_query}
 # =============================================================================
 
 class AnalyticsDB:
-    """SQLite database for logging queries and feedback."""
-    
+    """SQLite database for analytics and feedback."""
+
     def __init__(self, db_path: str):
         self.db_path = db_path
-        
+
     async def initialize(self):
         """Create tables if they don't exist."""
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute('''
                 CREATE TABLE IF NOT EXISTS queries (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp TEXT NOT NULL,
-                    user_id INTEGER NOT NULL,
-                    username TEXT,
-                    query TEXT NOT NULL,
+                    timestamp TEXT,
+                    user_id INTEGER,
+                    query TEXT,
                     response TEXT,
-                    tokens_used INTEGER,
-                    response_time_ms INTEGER
+                    tokens_used INTEGER DEFAULT 0,
+                    error TEXT
                 )
             ''')
             await db.execute('''
                 CREATE TABLE IF NOT EXISTS feedback (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp TEXT NOT NULL,
+                    timestamp TEXT,
                     query_id INTEGER,
-                    user_id INTEGER NOT NULL,
-                    feedback TEXT NOT NULL
+                    user_id INTEGER,
+                    feedback TEXT
                 )
             ''')
             await db.commit()
-    
-    async def log_query(self, user_id: int, username: str, query: str, 
-                       response: str, tokens_used: int, response_time_ms: int) -> int:
-        """Log a user query and return the query ID."""
+
+    async def log_query(self, user_id: int, query: str, response: str) -> int:
+        """Log a query and return its ID."""
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute('''
-                INSERT INTO queries (timestamp, user_id, username, query, response, tokens_used, response_time_ms)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (datetime.utcnow().isoformat(), user_id, username, query, response, tokens_used, response_time_ms))
+                INSERT INTO queries (timestamp, user_id, query, response)
+                VALUES (?, ?, ?, ?)
+            ''', (datetime.utcnow().isoformat(), user_id, query, response))
             await db.commit()
             return cursor.lastrowid
-    
+
     async def log_feedback(self, query_id: int, user_id: int, feedback: str):
-        """Log user feedback for a response."""
+        """Log user feedback."""
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute('''
                 INSERT INTO feedback (timestamp, query_id, user_id, feedback)
@@ -338,26 +391,26 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command."""
     welcome_message = """👋 Welcome to **US Crypto Tax Basics**!
 
-I help you understand US crypto tax rules in plain English.
+I help you understand U.S. federal crypto tax rules in plain English.
 
 **What I can explain:**
+• How the IRS classifies crypto
 • Taxable vs non-taxable events
 • Capital gains (short-term vs long-term)
 • Staking, mining, airdrops
 • DeFi taxes (swaps, LPs, lending)
 • NFT taxation
-• Tax-saving strategies
 • Reporting requirements
 
 **Just ask me a question!** For example:
 › _"Is swapping ETH for USDC taxable?"_
 › _"How are staking rewards taxed?"_
-› _"What is tax-loss harvesting?"_
+› _"What is the wash sale rule for crypto?"_
 
-⚠️ I provide educational info only, not tax advice.
+⚠️ I provide educational info only, not tax advice. Always consult a CPA for your specific situation.
 
 Type /help for commands."""
-    
+
     await update.message.reply_text(welcome_message, parse_mode='Markdown')
 
 
@@ -375,8 +428,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • Rate my answers with 👍 or 👎
 
 **Can't find what you need?**
-I'll tell you when to consult a CPA."""
-    
+I'll let you know when to consult a CPA."""
+
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
 
@@ -385,15 +438,15 @@ async def cmd_topics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     topics = """**Topics I can explain:**
 
 📌 **Basics** - IRS classification, taxable events
-💰 **Capital Gains** - Short/long-term rates, cost basis
+💰 **Capital Gains** - Short/long-term, cost basis methods
 ⛏️ **Earning Crypto** - Mining, staking, airdrops, forks
 🔄 **DeFi** - Swaps, LPs, lending, borrowing, wrapping
 🎨 **NFTs** - Buying, selling, creating
 📋 **Reporting** - Forms 8949, Schedule D, 1099-DA
-💡 **Strategies** - Tax-loss harvesting, donations
+📜 **Rules** - Wash sale, holding periods, donations
 
 Ask me anything about these!"""
-    
+
     await update.message.reply_text(topics, parse_mode='Markdown')
 
 
@@ -401,27 +454,30 @@ async def cmd_disclaimer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /disclaimer command."""
     disclaimer = """⚠️ **IMPORTANT DISCLAIMER**
 
-This bot provides **educational information only**.
+This bot provides **general educational information only** about U.S. federal cryptocurrency taxation.
 
 **This is NOT:**
 • Tax advice
-• Legal advice  
+• Legal advice
 • Financial advice
 • A substitute for a CPA
 
-**Information is based on:**
+**This information:**
+• Does not consider your full tax profile, filing status, state taxation, or other income factors
+• Is based on IRS guidance as of 2025
+• May become outdated as laws change
+
+**Sources used:**
 • IRS Notice 2014-21
 • IRS Revenue Rulings 2019-24, 2023-14
 • IRS FAQ on Virtual Currency
 • IRS Final Regulations 2024
+• Revenue Procedure 2024-28
 
-**Always:**
-• Consult a qualified tax professional
-• Verify with official IRS sources
-• Consider your specific situation
+**Always consult a qualified tax professional (CPA or tax attorney) for guidance specific to your situation.**
 
 Knowledge base last updated: December 2025"""
-    
+
     await update.message.reply_text(disclaimer, parse_mode='Markdown')
 
 
@@ -438,85 +494,80 @@ def create_feedback_keyboard(query_id: int) -> InlineKeyboardMarkup:
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle user text messages."""
-    user_message = update.message.text
+    if not update.message or not update.message.text:
+        return
+
+    user_message = update.message.text.strip()
     user_id = update.effective_user.id
-    username = update.effective_user.username
-    
-    logger.info(f"Query from {user_id} (@{username}): {user_message[:100]}...")
-    
+
+    if not user_message:
+        return
+
+    logger.info(f"User {user_id}: {user_message[:100]}")
+
     # Show typing indicator
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-    
-    start_time = datetime.now()
-    
+    await context.bot.send_chat_action(
+        chat_id=update.effective_chat.id,
+        action="typing"
+    )
+
     try:
         # Search knowledge base
         relevant_chunks = knowledge_base.search(user_message, n_results=3)
         context_str = knowledge_base.format_context(relevant_chunks)
-        
+
         # Generate response
-        response_text, tokens_used = await llm_handler.generate_response(user_message, context_str)
-        
-        # Calculate response time
-        response_time_ms = int((datetime.now() - start_time).total_seconds() * 1000)
-        
-        # Log to database
-        query_id = await analytics_db.log_query(
-            user_id=user_id,
-            username=username or "",
-            query=user_message,
-            response=response_text,
-            tokens_used=tokens_used,
-            response_time_ms=response_time_ms
-        )
-        
-        # Send response with feedback buttons
+        response = llm_handler.generate_response(user_message, context_str)
+
+        # Log to analytics
+        query_id = await analytics_db.log_query(user_id, user_message, response)
+
+        # Create feedback keyboard
         keyboard = create_feedback_keyboard(query_id)
-        
-        # Split long messages if needed
-        if len(response_text) <= 4096:
-            await update.message.reply_text(response_text, reply_markup=keyboard, parse_mode='Markdown')
-        else:
-            chunks = [response_text[i:i+4000] for i in range(0, len(response_text), 4000)]
-            for i, chunk in enumerate(chunks):
-                if i == len(chunks) - 1:
-                    await update.message.reply_text(chunk, reply_markup=keyboard)
+
+        # Send response (split if too long for Telegram)
+        if len(response) > 4096:
+            parts = [response[i:i+4096] for i in range(0, len(response), 4096)]
+            for i, part in enumerate(parts):
+                if i == len(parts) - 1:
+                    await update.message.reply_text(part, reply_markup=keyboard)
                 else:
-                    await update.message.reply_text(chunk)
-        
-        logger.info(f"Response sent. Tokens: {tokens_used}, Time: {response_time_ms}ms")
-        
+                    await update.message.reply_text(part)
+        else:
+            await update.message.reply_text(response, reply_markup=keyboard)
+
     except Exception as e:
-        logger.error(f"Error handling message: {e}")
+        logger.error(f"Error handling message: {e}", exc_info=True)
         await update.message.reply_text(
-            "❌ Sorry, something went wrong. Please try again later."
+            "Sorry, I encountered an error processing your question. Please try again."
         )
 
 
 async def handle_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle feedback button clicks."""
+    """Handle feedback button presses."""
     query = update.callback_query
     await query.answer()
-    
+
     data = query.data
     user_id = update.effective_user.id
-    
+
     if data.startswith("feedback_"):
         parts = data.split("_")
         if len(parts) >= 3:
-            feedback_type = parts[1]
-            query_id = int(parts[2])
-            
+            feedback_type = parts[1]  # "good" or "bad"
+            try:
+                query_id = int(parts[2])
+            except ValueError:
+                return
+
             await analytics_db.log_feedback(query_id, user_id, feedback_type)
-            
-            await query.edit_message_reply_markup(reply_markup=None)
-            
-            if feedback_type == "bad":
-                await query.message.reply_text(
-                    "Thanks for the feedback. Try rephrasing your question for a better answer!"
-                )
-            
-            logger.info(f"Feedback: {feedback_type} for query {query_id}")
+
+            if feedback_type == "good":
+                await query.edit_message_reply_markup(reply_markup=None)
+                # Don't send extra message, just remove buttons
+            else:
+                await query.edit_message_reply_markup(reply_markup=None)
+                # Don't send extra message, just remove buttons
 
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -528,50 +579,50 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # MAIN
 # =============================================================================
 
-async def post_init(application: Application):
-    """Initialize async components."""
-    global analytics_db
-    await analytics_db.initialize()
-    logger.info("Database initialized")
-
-
 def main():
     """Start the bot."""
     global config, knowledge_base, llm_handler, analytics_db
-    
-    logger.info("Starting US Crypto Tax Basics Bot v2.0...")
-    
-    # Load configuration
+
+    # Load config
     config = Config.from_env()
-    
+
     # Initialize OpenAI client
     openai_client = OpenAI(api_key=config.openai_api_key)
-    
-    # Initialize components
-    logger.info(f"Loading knowledge base from {config.knowledge_base_path}...")
+
+    # Initialize knowledge base with embeddings
+    logger.info("Loading knowledge base and computing embeddings...")
     knowledge_base = KnowledgeBase(config.knowledge_base_path, openai_client)
-    
+
+    # Initialize LLM handler
     logger.info("Initializing LLM handler...")
     llm_handler = LLMHandler(openai_client)
-    
-    logger.info("Initializing analytics database...")
+
+    # Initialize analytics
     analytics_db = AnalyticsDB(config.db_path)
-    
+
     # Create application
+    logger.info("Starting Telegram bot...")
     application = Application.builder().token(config.telegram_token).build()
+
+    # Initialize database on startup
+    async def post_init(app):
+        await analytics_db.initialize()
+
     application.post_init = post_init
-    
+
     # Add handlers
     application.add_handler(CommandHandler("start", cmd_start))
     application.add_handler(CommandHandler("help", cmd_help))
     application.add_handler(CommandHandler("topics", cmd_topics))
     application.add_handler(CommandHandler("disclaimer", cmd_disclaimer))
+    application.add_handler(CallbackQueryHandler(handle_feedback))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    application.add_handler(CallbackQueryHandler(handle_feedback, pattern="^feedback_"))
+
+    # Error handler
     application.add_error_handler(error_handler)
-    
-    # Start bot
-    logger.info("Bot is starting...")
+
+    # Start polling
+    logger.info("Bot is running!")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
